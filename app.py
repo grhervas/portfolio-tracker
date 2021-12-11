@@ -3,11 +3,14 @@ import requests
 from typing import Union
 from datetime import datetime
 import pandas as pd
+import yfinance as yf
 from pprint import pprint
 
 NOTION_URL = "https://api.notion.com/v1/databases/"
 NOTION_VERSION = "2021-08-16"
 DATABASE_ID = "aa1f83615ff945239302887264317370"
+
+MARKETS_DICT = {"EAM": "AS", "XET": "DE"}
 
 
 class NotionAPI():
@@ -131,12 +134,12 @@ class NotionAPI():
         else:
             raise ValueError(f"More than 1 element in list!")
 
-    def get_transactions_dataframe(self) -> pd.DataFrame:
+    def get_transactions_df(self) -> pd.DataFrame:
         """
         Returns `pandas.DataFrame` from Notion's database.
 
         Iterates through results from CURL response (following json schema)
-        and applies appropiate format to each field.
+        and applies appropiate format to each field depending on datatype.
 
         Returns
         -------
@@ -196,8 +199,122 @@ class NotionAPI():
         return df[["Fecha", "Tipo", "Producto", "ISIN", "Bolsa", "Centro ejecución",
                    "Símbolo", "Descripción", "Unidades", "Valor", "Tasa"]]
 
+        """
+        Returns `pandas.DataFrame` with whole historic of open positions
+
+        Parameters
+        ----------
+        ```python
+        df : pandas.DataFrame
+        ```
+            Dataframe containing list of transactions (obtained from `get_transactions_df()`)
+
+        Returns
+        -------
+        ```python
+        df_pos : pandas.DataFrame
+        ```
+            The tabulated result with dates from beginning to today as indexes and different \n
+            financial products as columns.
+        """
+
+        # Generate date index
+        date_idx = pd.date_range(df["Fecha"].min(), datetime.today().date(), name="Fecha")
+
+        # Invert "Buy" units sign (for those that are recorded as positive)
+        df.loc[(df["Tipo"] == "Venta") & (df["Unidades"] > 0), "Unidades"] *= -1
+
+        # Pivot transactions dataframe to get as index the date_range and the products
+        # as columns, propagating last valid observations
+        df_pos = (df.loc[df["Tipo"].isin(["Compra", "Venta"])]
+                    .pivot(index="Fecha", columns="Producto", values="Unidades")
+                    .sort_index().cumsum().reindex(date_idx).fillna(method="ffill"))
+
+        return df_pos
+
+    def get_his_positions_df(self, df: pd.DataFrame, format_out: str = "wide",
+                             markets_dict: dict = MARKETS_DICT) -> pd.DataFrame:
+        """
+        Returns `pandas.DataFrame` with whole historic of open positions
+
+        Contains info about number of open positions, price, value and other\n
+        stock info from *Yahoo! Finance* (module yfinance)
+
+        Parameters
+        ----------
+        ```python
+        df : pandas.DataFrame
+        ```
+            Dataframe containing list of transactions (obtained from `get_transactions_df()`)
+        ```python
+        format_out : str, default="wide"
+        ```
+            Indicator to return DataFrame in `wide` (default, index=Fecha), `long`\n
+            (index=Fecha-Producto-Métrica) or `mixed` (index=Fecha-Producto) format
+
+        Returns
+        -------
+        ```python
+        pandas.DataFrame
+        ```
+            The tabulated result with dates from beginning to today as indexes and different \n
+            financial products as columns.
+        """
+
+        # Generate date index
+        date_idx = pd.date_range(df["Fecha"].min(), datetime.today().date(), name="Fecha")
+
+        # Invert "Buy" units sign (for those that are recorded as positive)
+        df.loc[(df["Tipo"] == "Venta") & (df["Unidades"] > 0), "Unidades"] *= -1
+
+        # Pivot transactions dataframe to get as index the date_range and the products
+        # as columns, propagating last valid observations
+        df_qty = (df.loc[df["Tipo"].isin(["Compra", "Venta"])]
+                    .pivot(index="Fecha", columns="Producto", values="Unidades")
+                    .sort_index().cumsum().reindex(date_idx).fillna(method="ffill"))
+
+        # Get product info from transactions
+        products = (df[["Producto", "ISIN", "Bolsa",
+                        "Centro ejecución", "Símbolo"]].drop_duplicates()
+                                                       .dropna())
+        # Create ticker symbol compatible with yfinance
+        products["ticker_yfinance"] = (products["Símbolo"] + "." +
+                                       products["Bolsa"].replace(markets_dict))
+        # Create MultiIndex with renamed columns to YFinance compatible tickets
+        prod_col_level = df_qty.rename(columns=products.set_index("Producto")["ticker_yfinance"]
+                                                       .to_dict()).columns
+        df_qty.columns = pd.MultiIndex.from_product([["Cantidad"], prod_col_level],
+                                                    names=["Métrica", "Producto"])
+
+        # Download whole historic series for all products from Yahoo! Finance
+        df_stock = yf.download(products["ticker_yfinance"].to_list(),
+                               df["Fecha"].min())
+
+        # Join the Quantity dataframe (with open positions) with the
+        # stock data dataframe
+        df_wide = df_qty.join(df_stock, how="left").fillna(method="ffill")
+        # Create column with value of position
+        # (df_wide[["Cantidad"]] * df_wide["Adj Close"]).rename(columns={"Cantidad": "Valor"})
+        df_wide = df_wide.join(df_wide[["Cantidad"]].multiply(df_wide["Adj Close"])
+                                                    .rename(columns={"Cantidad": "Valor"}))
+
+        if format_out == "wide":
+            return df_wide
+        # Transform to "long" format (Fecha-Producto-Métrica index)
+        elif format_out == "long":
+            df_long = (df_wide.reset_index()
+                              .melt(id_vars="Fecha")
+                              .set_index(["Fecha", "Producto", "Métrica"]))
+            return df_long
+        # Transform to "mixed" format (Fecha-Producto index)
+        elif format_out == "mixed":
+            df_mixed = df_wide.stack(level="Producto", dropna=False)
+            return df_mixed
+        else:
+            raise ValueError(f"{format_out} is not a valid format ('wide', 'long' or 'mixed').")
+
 
 if __name__ == "__main__":
     notion = NotionAPI()
-    df = notion.get_transactions_dataframe()
+    df = notion.get_his_positions_df(notion.get_transactions_df())
     pprint(df)
