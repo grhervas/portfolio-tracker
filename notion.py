@@ -1,9 +1,10 @@
-import secrets
+import config  # type: ignore
 import requests
 from typing import Union
-from datetime import datetime
+from datetime import datetime, date
 import pandas as pd
 import yfinance as yf
+import pandas_datareader.data as web
 from pprint import pprint
 
 NOTION_URL = "https://api.notion.com/v1/databases/"
@@ -11,6 +12,7 @@ NOTION_VERSION = "2021-08-16"
 DATABASE_ID = "aa1f83615ff945239302887264317370"
 
 MARKETS_DICT = {"EAM": "AS", "XET": "DE"}
+AV_API_KEY = "ILZ89DS0WFHPSG2L"
 
 
 class NotionAPI():
@@ -32,7 +34,7 @@ class NotionAPI():
     def __init__(self):
         pass
 
-    def retrieve_db(self, token: str = secrets.INT_TOKEN,
+    def retrieve_db(self, token: str = config.INT_TOKEN,
                     version: str = NOTION_VERSION) -> dict:
         """
         Retrieves whole database using [Notion's API GET method](https://developers.notion.com/reference/retrieve-a-database/).
@@ -64,7 +66,7 @@ class NotionAPI():
         else:
             raise ConnectionError(f"Response status: {response.status_code}")
 
-    def query_db(self, token: str = secrets.INT_TOKEN,
+    def query_db(self, token: str = config.INT_TOKEN,
                  version: str = NOTION_VERSION) -> dict:
         """
         Queries database for specific results using [Notion's API POST method](https://developers.notion.com/reference/post-database-query).
@@ -196,44 +198,17 @@ class NotionAPI():
 
         df = pd.DataFrame.from_records(records)
 
+        # Get product info from transactions
+        self.products = (df[["Producto", "ISIN", "Bolsa",
+                             "Centro ejecución", "Símbolo"]].drop_duplicates()
+                                                            .dropna())
+
         return df[["Fecha", "Tipo", "Producto", "ISIN", "Bolsa", "Centro ejecución",
                    "Símbolo", "Descripción", "Unidades", "Valor", "Tasa"]]
 
-        """
-        Returns `pandas.DataFrame` with whole historic of open positions
-
-        Parameters
-        ----------
-        ```python
-        df : pandas.DataFrame
-        ```
-            Dataframe containing list of transactions (obtained from `get_transactions_df()`)
-
-        Returns
-        -------
-        ```python
-        df_pos : pandas.DataFrame
-        ```
-            The tabulated result with dates from beginning to today as indexes and different \n
-            financial products as columns.
-        """
-
-        # Generate date index
-        date_idx = pd.date_range(df["Fecha"].min(), datetime.today().date(), name="Fecha")
-
-        # Invert "Buy" units sign (for those that are recorded as positive)
-        df.loc[(df["Tipo"] == "Venta") & (df["Unidades"] > 0), "Unidades"] *= -1
-
-        # Pivot transactions dataframe to get as index the date_range and the products
-        # as columns, propagating last valid observations
-        df_pos = (df.loc[df["Tipo"].isin(["Compra", "Venta"])]
-                    .pivot(index="Fecha", columns="Producto", values="Unidades")
-                    .sort_index().cumsum().reindex(date_idx).fillna(method="ffill"))
-
-        return df_pos
-
     def get_his_positions_df(self, df: pd.DataFrame, format_out: str = "wide",
-                             markets_dict: dict = MARKETS_DICT) -> pd.DataFrame:
+                             markets_dict: dict = MARKETS_DICT,
+                             av_api_key: str = AV_API_KEY) -> pd.DataFrame:
         """
         Returns `pandas.DataFrame` with whole historic of open positions
 
@@ -262,7 +237,7 @@ class NotionAPI():
         """
 
         # Generate date index
-        date_idx = pd.date_range(df["Fecha"].min(), datetime.today().date(), name="Fecha")
+        date_idx = pd.date_range(df["Fecha"].min(), date.today(), name="Fecha")
 
         # Invert "Buy" units sign (for those that are recorded as positive)
         df.loc[(df["Tipo"] == "Venta") & (df["Unidades"] > 0), "Unidades"] *= -1
@@ -273,26 +248,38 @@ class NotionAPI():
                     .pivot(index="Fecha", columns="Producto", values="Unidades")
                     .sort_index().cumsum().reindex(date_idx).fillna(method="ffill"))
 
-        # Get product info from transactions
-        products = (df[["Producto", "ISIN", "Bolsa",
-                        "Centro ejecución", "Símbolo"]].drop_duplicates()
-                                                       .dropna())
         # Create ticker symbol compatible with yfinance
-        products["ticker_yfinance"] = (products["Símbolo"] + "." +
-                                       products["Bolsa"].replace(markets_dict))
+        self.products["ticker_yfinance"] = (self.products["Símbolo"] + "." +
+                                            self.products["Bolsa"].replace(markets_dict))
         # Create MultiIndex with renamed columns to YFinance compatible tickets
-        prod_col_level = df_qty.rename(columns=products.set_index("Producto")["ticker_yfinance"]
-                                                       .to_dict()).columns
+        prod_col_level = df_qty.rename(columns=self.products.set_index("Producto")["ticker_yfinance"]
+                                                            .to_dict()).columns
         df_qty.columns = pd.MultiIndex.from_product([["Cantidad"], prod_col_level],
                                                     names=["Métrica", "Producto"])
 
         # Download whole historic series for all products from Yahoo! Finance
-        df_stock = yf.download(products["ticker_yfinance"].to_list(),
+        df_stock = yf.download(self.products["ticker_yfinance"].to_list(),
                                df["Fecha"].min())
 
         # Join the Quantity dataframe (with open positions) with the
         # stock data dataframe
         df_wide = df_qty.join(df_stock, how="left").fillna(method="ffill")
+
+        # In case for some ticket yfinance doesn't return results
+        tickets_missing = df_wide["Adj Close"].isna().any()
+        for miss_ticket in tickets_missing[tickets_missing].index:
+            # Download data for ticket from Alpha Vantage
+            # using pandas_datareader
+            alt_data = web.DataReader(miss_ticket, "av-daily",
+                                      start=df["Fecha"].min(),
+                                      end=date.today(),
+                                      api_key=av_api_key)
+            # Convert index to DatetimeIndex
+            alt_data.index = pd.to_datetime(alt_data.index)
+            # Fill NaN with alternative data
+            (df_wide.loc[:, ("Adj Close", miss_ticket)]
+                    .fillna(alt_data["close"], inplace=True))
+
         # Create column with value of position
         # (df_wide[["Cantidad"]] * df_wide["Adj Close"]).rename(columns={"Cantidad": "Valor"})
         df_wide = df_wide.join(df_wide[["Cantidad"]].multiply(df_wide["Adj Close"])
