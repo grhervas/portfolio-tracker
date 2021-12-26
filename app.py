@@ -1,5 +1,4 @@
 import streamlit as st
-# import pandas as pd
 from notion import NotionAPI  # type: ignore
 from datetime import date, timedelta
 import pandas as pd
@@ -37,25 +36,28 @@ df_tran, df_pos = get_dataframes(notion)
 
 # Selectors in left panel
 sel_date = st.sidebar.date_input(
-    "Select date",
+    "Seleccione fecha",
     date.today() - timedelta(days=1))
 
-st.write('Selected date to view positions:', sel_date)
+st.write('Fecha seleccionada:', sel_date)
 
 # PART 1: Position info and KPIs
-st.subheader("Position info")
+st.subheader("Posiciones")
 
 # Important KPIs
 col1, col2, col3 = st.columns(3)
+
 value_metric = df_pos['Valor'].loc[pd.Timestamp(sel_date)].sum()
-diff_metric = (df_pos["Valor"].loc[pd.Timestamp(sel_date) - timedelta(days=1):pd.Timestamp(sel_date)]
-               .sum(axis=1).diff()[-1])
-pct_metric = (df_pos["Valor"].loc[sel_date - timedelta(days=1):sel_date]
-              .sum(axis=1).pct_change()[-1] * 100)
+diff_1d_metric = (df_pos["Valor"].loc[pd.Timestamp(sel_date) - timedelta(days=1):pd.Timestamp(sel_date)]
+                                 .sum(axis=1).diff()[-1])
+pct_1d_metric = (df_pos["Valor"].loc[sel_date - timedelta(days=1):sel_date]
+                                .sum(axis=1).pct_change()[-1] * 100)
 col1.metric("Valor cartera",
             f"{value_metric:.2f}€",
-            f"{diff_metric:.2f}€ ({pct_metric:.2f}%)")
-col2.metric("Wind", "9 mph", "-8%")
+            f"{diff_1d_metric:.2f}€ ({pct_1d_metric:.2f}%)")
+
+
+# col2.metric("Balance total", delta=f"{}€")
 col3.metric("Humidity", "86%", "4%")
 
 # Area plot with historic value of position

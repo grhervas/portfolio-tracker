@@ -198,13 +198,37 @@ class NotionAPI():
 
         df = pd.DataFrame.from_records(records)
 
+        # Create auxiliary columns for calculating Cash, Cumulative Deposits, Withdraws, etc.
+        # df_tran_mod = df_tran.copy()
+        # Order by ascending dates for computing cumulative values correctly
+        df["Fecha"] = pd.to_datetime(df["Fecha"], format="%Y-%m-%d")
+        df = df.sort_values("Fecha")
+
+        df["Ingresado"] = abs(df.loc[df["Tipo"] == "Ingreso", "Valor"]
+                                .cumsum().reindex(df.index).fillna(method="ffill").fillna(0.0))
+        df["Retirado"] = abs(df.loc[df["Tipo"] == "Retirada", "Valor"]
+                               .cumsum().reindex(df.index).fillna(method="ffill").fillna(0.0))
+        df["Total"] = abs(df["Unidades"] * df["Valor"])
+        df["Comprado"] = abs(df.loc[df["Tipo"] == "Compra", "Total"]
+                               .cumsum().reindex(df.index).fillna(method="ffill").fillna(0.0))
+        df["Vendido"] = abs(df.loc[df["Tipo"] == "Venta", "Total"]
+                              .cumsum().reindex(df.index).fillna(method="ffill").fillna(0.0))
+        df["Dividendos acumulados"] = abs(df.loc[df["Tipo"] == "Dividendo", "Valor"]
+                                            .cumsum().reindex(df.index).fillna(method="ffill").fillna(0.0))
+        df["Costes acumulados"] = abs(df["Tasa"].cumsum().fillna(method="ffill").fillna(0.0))
+
+        df["Efectivo"] = (df[["Ingresado", "Dividendos acumulados", "Vendido"]].sum(axis=1) -
+                          df[["Retirado", "Comprado", "Costes acumulados"]].sum(axis=1))
+
         # Get product info from transactions
         self.products = (df[["Producto", "ISIN", "Bolsa",
                              "Centro ejecución", "Símbolo"]].drop_duplicates()
                                                             .dropna())
 
         return df[["Fecha", "Tipo", "Producto", "ISIN", "Bolsa", "Centro ejecución",
-                   "Símbolo", "Descripción", "Unidades", "Valor", "Tasa"]]
+                   "Símbolo", "Descripción", "Unidades", "Valor", "Tasa", "Ingresado",
+                   "Retirado", "Total", "Comprado", "Vendido", "Dividendos acumulados",
+                   "Costes acumulados", "Efectivo"]]
 
     def get_his_positions_df(self, df: pd.DataFrame, format_out: str = "wide",
                              markets_dict: dict = MARKETS_DICT,
@@ -279,11 +303,20 @@ class NotionAPI():
             # Fill NaN with alternative data
             (df_wide.loc[:, ("Adj Close", miss_ticket)]
                     .fillna(alt_data["close"], inplace=True))
+            # Fill weekends with ffill
+            (df_wide.loc[:, ("Adj Close", miss_ticket)]
+                    .fillna(method="ffill", inplace=True))
 
         # Create column with value of position
         # (df_wide[["Cantidad"]] * df_wide["Adj Close"]).rename(columns={"Cantidad": "Valor"})
         df_wide = df_wide.join(df_wide[["Cantidad"]].multiply(df_wide["Adj Close"])
                                                     .rename(columns={"Cantidad": "Valor"}))
+
+        # Add column for Cash just in Value part
+        df_wide["Valor", "Efectivo"] = (df.sort_values(["Fecha", "Efectivo"])
+                                          .drop_duplicates("Fecha", keep="last")
+                                          .set_index("Fecha")["Efectivo"]
+                                          .reindex(df_wide.index).fillna(method="ffill"))
 
         if format_out == "wide":
             return df_wide
