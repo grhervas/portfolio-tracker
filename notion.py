@@ -230,7 +230,7 @@ class NotionAPI():
                    "Retirado", "Total", "Comprado", "Vendido", "Dividendos acumulados",
                    "Costes acumulados", "Efectivo"]]
 
-    def get_his_positions_df(self, df: pd.DataFrame, format_out: str = "wide",
+    def get_his_positions_df(self, df_tran: pd.DataFrame, format_out: str = "wide",
                              markets_dict: dict = MARKETS_DICT,
                              av_api_key: str = AV_API_KEY) -> pd.DataFrame:
         """
@@ -242,7 +242,7 @@ class NotionAPI():
         Parameters
         ----------
         ```python
-        df : pandas.DataFrame
+        df_tran : pandas.DataFrame
         ```
             Dataframe containing list of transactions (obtained from `get_transactions_df()`)
         ```python
@@ -261,16 +261,17 @@ class NotionAPI():
         """
 
         # Generate date index
-        date_idx = pd.date_range(df["Fecha"].min(), date.today(), name="Fecha")
+        date_idx = pd.date_range(df_tran["Fecha"].min(), date.today(), name="Fecha")
 
         # Invert "Buy" units sign (for those that are recorded as positive)
-        df.loc[(df["Tipo"] == "Venta") & (df["Unidades"] > 0), "Unidades"] *= -1
+        df_tran.loc[(df_tran["Tipo"] == "Venta") & (df_tran["Unidades"] > 0),
+                    "Unidades"] *= -1
 
         # Pivot transactions dataframe to get as index the date_range and the products
         # as columns, propagating last valid observations
-        df_qty = (df.loc[df["Tipo"].isin(["Compra", "Venta"])]
-                    .pivot(index="Fecha", columns="Producto", values="Unidades")
-                    .sort_index().cumsum().reindex(date_idx).fillna(method="ffill"))
+        df_qty = (df_tran.loc[df_tran["Tipo"].isin(["Compra", "Venta"])]
+                         .pivot(index="Fecha", columns="Producto", values="Unidades")
+                         .sort_index().cumsum().reindex(date_idx).fillna(method="ffill"))
 
         # Create ticker symbol compatible with yfinance
         self.products["ticker_yfinance"] = (self.products["Símbolo"] + "." +
@@ -283,7 +284,7 @@ class NotionAPI():
 
         # Download whole historic series for all products from Yahoo! Finance
         df_stock = yf.download(self.products["ticker_yfinance"].to_list(),
-                               df["Fecha"].min())
+                               df_tran["Fecha"].min())
 
         # Join the Quantity dataframe (with open positions) with the
         # stock data dataframe
@@ -295,7 +296,7 @@ class NotionAPI():
             # Download data for ticket from Alpha Vantage
             # using pandas_datareader
             alt_data = web.DataReader(miss_ticket, "av-daily",
-                                      start=df["Fecha"].min(),
+                                      start=df_tran["Fecha"].min(),
                                       end=date.today(),
                                       api_key=av_api_key)
             # Convert index to DatetimeIndex
@@ -313,10 +314,9 @@ class NotionAPI():
                                                     .rename(columns={"Cantidad": "Valor"}))
 
         # Add column for Cash just in Value part
-        df_wide["Valor", "Efectivo"] = (df.sort_values(["Fecha", "Efectivo"])
-                                          .drop_duplicates("Fecha", keep="last")
-                                          .set_index("Fecha")["Efectivo"]
-                                          .reindex(df_wide.index).fillna(method="ffill"))
+        df_wide["Valor", "Efectivo"] = (df_tran.drop_duplicates("Fecha", keep="last")
+                                               .set_index("Fecha")["Efectivo"]
+                                               .reindex(df_wide.index).fillna(method="ffill"))
 
         if format_out == "wide":
             return df_wide
@@ -332,6 +332,34 @@ class NotionAPI():
             return df_mixed
         else:
             raise ValueError(f"{format_out} is not a valid format ('wide', 'long' or 'mixed').")
+
+    def get_performance_df(self, df_tran: pd.DataFrame, df_pos: pd.DataFrame):
+        """
+        Returns an auxiliary `pandas.DataFrame` for computing performances
+        (Time-Weighted Return and Money-Weighted Return)
+        """
+
+        # Create pandas.Series with movement info (Ingresos-Retiradas)
+        s_mov = (df_tran.loc[df_tran["Tipo"].isin(["Ingreso", "Retirada"]),
+                             ["Fecha", "Tipo", "Valor"]]
+                        .groupby("Fecha")
+                        .apply(lambda x:
+                               x.loc[x["Tipo"] == "Ingreso", "Valor"].sum() -
+                               x.loc[x["Tipo"] == "Retirada", "Valor"].sum())
+                        .rename("movimientos"))
+        # Create pandas.Series with current and previous value at same row level
+        s_val_act = df_pos["Valor"].sum(axis=1).rename("valor act.")
+        s_val_ant = df_pos["Valor"].sum(axis=1).shift().rename("valor ant.")
+
+        # Create final pandas.DataFrame with daily Rate-Of-Return
+        # (for computing TWR) ROR = (EV - (SV+CF)) / (SV+CF)
+        # Here a deposit is positive CF, and withdrawal negative
+        df_perf = pd.concat([s_val_act, s_val_ant, s_mov], axis=1).fillna(0.0)
+        df_perf["ROR_daily"] = (
+            (df_perf["valor act."] - (df_perf["valor ant."] + df_perf["movimientos"]))
+            / (df_perf["valor ant."] + df_perf["movimientos"]) + 1)
+
+        return df_perf
 
 
 if __name__ == "__main__":
