@@ -161,56 +161,9 @@ df_rets = (
     .join(df_perf["ROR_daily"].rename("Cartera"))
 )
 
-st.line_chart((df_rets.loc[start_date:sel_date].cumprod() - 1) * 100)
+line_fig = px.line((df_rets.loc[start_date:sel_date].cumprod() - 1) * 100,
+                   labels={"value": "Rendimiento (%)",
+                           "variable": "Producto"},
+                   hover_data={"value": ":.2f"})
 
-# # df1 = df.loc[["2021-08-24"],
-# #              pd.IndexSlice[["Cantidad", "Adj Close", "Valor"], :]]
-# df1 = df_pos.iloc[-31:]["Valor"]
-
-# x = st.slider('x')  # 👈 this is a widget
-# st.write(x, 'squared is', x * x)
-
-# st.text_input("Your name", key="nombre")
-# # You can access the value at any point with:
-# st.session_state.nombre
-
-# 'Starting a long computation...'
-
-# # Add a placeholder
-# latest_iteration = st.empty()
-# bar = st.progress(0)
-
-# for i in range(100):
-#   # Update the progress bar with each iteration.
-#   latest_iteration.text(f'Iteration {i+1}')
-#   bar.progress(i + 1)
-#   time.sleep(0.1)
-
-# '...and now we\'re done!'
-
-
-# option = st.selectbox(
-#     "Which product to show?",
-#     df_pos.columns.get_level_values("Producto").unique()
-# )
-
-# st.write(f"You selected: {option}")
-
-# st.line_chart(df1)
-
-# left_column, right_column = st.columns(2)
-# # You can use a column just like st.sidebar:
-# left_column.button('Press me!')
-
-# # Or even better, call Streamlit functions inside a "with" block:
-# with right_column:
-#     chosen = st.radio(
-#         'Sorting hat',
-#         ("Gryffindor", "Ravenclaw", "Hufflepuff", "Slytherin"))
-#     st.write(f"You are in {chosen} house!")
-
-# # st.write(df)
-# # st.dataframe(df) # Same as st.write(), dynamic table
-# # st.table(df) # Static table
-# if st.checkbox('Show dataframe'):
-#     st.dataframe(df1.style.highlight_max(axis=0))
+st.plotly_chart(line_fig)
