@@ -1,18 +1,18 @@
-import config  # type: ignore
+# import config  # type: ignore
+import toml
 import requests
 from typing import Union
 from datetime import datetime, date
 import pandas as pd
 import yfinance as yf
 import pandas_datareader.data as web
-from pprint import pprint
+# from pprint import pprint
 
-NOTION_URL = "https://api.notion.com/v1/databases/"
-NOTION_VERSION = "2021-08-16"
-DATABASE_ID = "aa1f83615ff945239302887264317370"
 
 MARKETS_DICT = {"EAM": "AS", "XET": "DE"}
-AV_API_KEY = "ILZ89DS0WFHPSG2L"
+
+
+config = toml.load(".streamlit/secrets.toml")
 
 
 class NotionAPI():
@@ -34,8 +34,11 @@ class NotionAPI():
     def __init__(self):
         pass
 
-    def retrieve_db(self, token: str = config.INT_TOKEN,
-                    version: str = NOTION_VERSION) -> dict:
+    def retrieve_db(self,
+                    db_url: str = config["notion"]["DB_URL"],
+                    db_id: str = config["notion"]["DB_ID"],
+                    version: str = config["notion"]["VERSION"],
+                    token: str = config["notion"]["INT_TOKEN"]) -> dict:
         """
         Retrieves whole database using [Notion's API GET method](https://developers.notion.com/reference/retrieve-a-database/).
 
@@ -58,16 +61,19 @@ class NotionAPI():
             If the response status from the CURL request is different from 200.
         """
 
-        db_url = NOTION_URL + DATABASE_ID
+        url = db_url + db_id
         header = {"Authorization": token, "Notion-Version": version}
-        response = requests.get(db_url, headers=header)
+        response = requests.get(url, headers=header)
         if response.status_code == 200:
             return response.json()
         else:
             raise ConnectionError(f"Response status: {response.status_code}")
 
-    def query_db(self, token: str = config.INT_TOKEN,
-                 version: str = NOTION_VERSION) -> dict:
+    def query_db(self,
+                 db_url: str = config["notion"]["DB_URL"],
+                 db_id: str = config["notion"]["DB_ID"],
+                 version: str = config["notion"]["VERSION"],
+                 token: str = config["notion"]["INT_TOKEN"]) -> dict:
         """
         Queries database for specific results using [Notion's API POST method](https://developers.notion.com/reference/post-database-query).
 
@@ -90,9 +96,9 @@ class NotionAPI():
             If the response status from the CURL request is different from 200.
         """
 
-        db_url = NOTION_URL + DATABASE_ID + "/query"
+        url = db_url + db_id + "/query"
         header = {"Authorization": token, "Notion-Version": version}
-        response = requests.post(db_url, headers=header)
+        response = requests.post(url, headers=header)
         if response.status_code == 200:
             return response.json()
         else:
@@ -232,7 +238,7 @@ class NotionAPI():
 
     def get_his_positions_df(self, df_tran: pd.DataFrame, format_out: str = "wide",
                              markets_dict: dict = MARKETS_DICT,
-                             av_api_key: str = AV_API_KEY) -> pd.DataFrame:
+                             av_api_key: str = config["others"]["AV_API_KEY"]) -> pd.DataFrame:
         """
         Returns `pandas.DataFrame` with whole historic of open positions
 
@@ -362,7 +368,7 @@ class NotionAPI():
         return df_perf
 
 
-if __name__ == "__main__":
-    notion = NotionAPI()
-    df = notion.get_his_positions_df(notion.get_transactions_df())
-    pprint(df)
+# if __name__ == "__main__":
+#     notion = NotionAPI()
+#     df = notion.get_his_positions_df(notion.get_transactions_df())
+#     pprint(df)

@@ -1,6 +1,6 @@
 # Secret config files
 config.py
-
+*.toml
 *.xlsx
 
 # Byte-compiled / optimized / DLL files

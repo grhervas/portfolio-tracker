@@ -35,8 +35,8 @@ def get_data(_notion):
 @st.experimental_memo()
 def get_sunburst_fig(df_pos, products, sel_date):
     df = (df_pos.loc[pd.Timestamp(sel_date),
-                    ["Cantidad", "Valor"]].unstack(level=0)
-                                          .reset_index())
+                     ["Cantidad", "Valor"]].unstack(level=0)
+                                           .reset_index())
     df["Desc"] = df["Producto"].replace(
         products.set_index("ticker_yfinance")["Producto"]
                 .to_dict())
