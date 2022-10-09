@@ -1,0 +1,9 @@
+wheel
+streamlit
+pytest
+ipykernel
+yfinance
+pandas-datareader
+# pandas
+# plotly
+# numpy-financial

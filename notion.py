@@ -291,6 +291,8 @@ class NotionAPI():
         # Download whole historic series for all products from Yahoo! Finance
         df_stock = yf.download(self.products["ticker_yfinance"].to_list(),
                                df_tran["Fecha"].min())
+        # Convert from tz-aware to tz-naive DateTimeIndex
+        df_stock = df_stock.tz_convert(None)
 
         # Join the Quantity dataframe (with open positions) with the
         # stock data dataframe
@@ -370,5 +372,7 @@ class NotionAPI():
 
 # if __name__ == "__main__":
 #     notion = NotionAPI()
-#     df = notion.get_his_positions_df(notion.get_transactions_df())
-#     pprint(df)
+#     df_tran = notion.get_transactions_df()
+#     df_pos = notion.get_his_positions_df(df_tran)
+#     df_perf = notion.get_performance_df(df_tran, df_pos)
+#     # pprint(df)
