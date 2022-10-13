@@ -1,18 +1,22 @@
 # import config  # type: ignore
+from pathlib import Path
 import toml
 import requests
 from typing import Union
-from datetime import datetime, date
+from dateutil.parser import parse
+from datetime import date, timezone
 import pandas as pd
 import yfinance as yf
 import pandas_datareader.data as web
 # from pprint import pprint
 
 
-MARKETS_DICT = {"EAM": "AS", "XET": "DE"}
+MARKETS_DICT = {"EAM": "AS", "XET": "DE", "MAD": "MC"}
 
-
-config = toml.load(".streamlit/secrets.toml")
+# Configure from TOML file in folder secret for streamlit
+root_dir = Path(__file__).parents[1] 
+config_file = root_dir / ".streamlit/secrets.toml"
+config = toml.load(config_file)
 
 
 class NotionAPI():
@@ -191,8 +195,7 @@ class NotionAPI():
                     record[col] = self._extract_plain_text(values["rich_text"])
                 # "date" datatype
                 elif col == "Fecha":
-                    record[col] = datetime.strptime(values["date"]["start"],
-                                                    "%Y-%m-%d").date()
+                    record[col] = parse(values["date"]["start"]).astimezone(timezone.utc)
                 # "select" datatype
                 elif col == "Tipo":
                     record[col] = values["select"]["name"]
@@ -207,7 +210,7 @@ class NotionAPI():
         # Create auxiliary columns for calculating Cash, Cumulative Deposits, Withdraws, etc.
         # df_tran_mod = df_tran.copy()
         # Order by ascending dates for computing cumulative values correctly
-        df["Fecha"] = pd.to_datetime(df["Fecha"], format="%Y-%m-%d")
+        # df["Fecha"] = pd.to_datetime(df["Fecha"], format="%Y-%m-%d")
         df = df.sort_values("Fecha")
 
         df["Ingresado"] = abs(df.loc[df["Tipo"] == "Ingreso", "Valor"]
@@ -229,7 +232,7 @@ class NotionAPI():
         # Get product info from transactions
         self.products = (df[["Producto", "ISIN", "Bolsa",
                              "Centro ejecución", "Símbolo"]].drop_duplicates()
-                                                            .dropna())
+                                .dropna(subset=["Producto", "ISIN", "Símbolo"]))
 
         return df[["Fecha", "Tipo", "Producto", "ISIN", "Bolsa", "Centro ejecución",
                    "Símbolo", "Descripción", "Unidades", "Valor", "Tasa", "Ingresado",
@@ -267,17 +270,20 @@ class NotionAPI():
         """
 
         # Generate date index
-        date_idx = pd.date_range(df_tran["Fecha"].min(), date.today(), name="Fecha")
+        date_idx = pd.date_range(df_tran["Fecha"].dt.date.min(), date.today(), name="Fecha")
 
         # Invert "Buy" units sign (for those that are recorded as positive)
         df_tran.loc[(df_tran["Tipo"] == "Venta") & (df_tran["Unidades"] > 0),
                     "Unidades"] *= -1
 
         # Pivot transactions dataframe to get as index the date_range and the products
-        # as columns, propagating last valid observations
-        df_qty = (df_tran.loc[df_tran["Tipo"].isin(["Compra", "Venta"])]
-                         .pivot(index="Fecha", columns="Producto", values="Unidades")
-                         .sort_index().cumsum().reindex(date_idx).fillna(method="ffill"))
+        # as columns, propagating last valid observations (getting last timestamp record
+        # from each day)
+        df_qty = df_tran.loc[df_tran["Tipo"].isin(["Compra", "Venta"])] \
+            .pivot(index="Fecha", columns="Producto", values="Unidades") \
+                .sort_index().cumsum().fillna(method="ffill")
+        df_qty = df_qty.groupby(df_qty.index.date).tail(1)
+        df_qty = df_qty.set_index(df_qty.index.date).reindex(date_idx).fillna(method="ffill")
 
         # Create ticker symbol compatible with yfinance
         self.products["ticker_yfinance"] = (self.products["Símbolo"] + "." +
@@ -292,7 +298,9 @@ class NotionAPI():
         df_stock = yf.download(self.products["ticker_yfinance"].to_list(),
                                df_tran["Fecha"].min())
         # Convert from tz-aware to tz-naive DateTimeIndex
-        df_stock = df_stock.tz_convert(None)
+        df_stock = df_stock.tz_localize(None).asfreq("D")
+        # From datetime to date index (to be able to join later)
+        df_stock = df_stock.set_index(df_stock.index.date)
 
         # Join the Quantity dataframe (with open positions) with the
         # stock data dataframe
@@ -304,7 +312,7 @@ class NotionAPI():
             # Download data for ticket from Alpha Vantage
             # using pandas_datareader
             alt_data = web.DataReader(miss_ticket, "av-daily",
-                                      start=df_tran["Fecha"].min(),
+                                      start=df_tran["Fecha"].dt.date.min(),
                                       end=date.today(),
                                       api_key=av_api_key)
             # Convert index to DatetimeIndex
@@ -322,9 +330,13 @@ class NotionAPI():
                                                     .rename(columns={"Cantidad": "Valor"}))
 
         # Add column for Cash just in Value part
-        df_wide["Valor", "Efectivo"] = (df_tran.drop_duplicates("Fecha", keep="last")
-                                               .set_index("Fecha")["Efectivo"]
-                                               .reindex(df_wide.index).fillna(method="ffill"))
+        # df_wide["Valor", "Efectivo"] = (df_tran.drop_duplicates("Fecha", keep="last")
+        #                                        .set_index("Fecha")["Efectivo"]
+        #                                        .reindex(df_wide.index).fillna(method="ffill"))
+        df_wide["Valor", "Efectivo"] = (df_tran.set_index(df_tran["Fecha"].dt.date)["Efectivo"]
+                                                .groupby("Fecha").tail(1)
+                                                .reindex(df_wide.index).fillna(method="ffill"))
+                                               
 
         if format_out == "wide":
             return df_wide
@@ -370,9 +382,9 @@ class NotionAPI():
         return df_perf
 
 
-# if __name__ == "__main__":
-#     notion = NotionAPI()
-#     df_tran = notion.get_transactions_df()
-#     df_pos = notion.get_his_positions_df(df_tran)
-#     df_perf = notion.get_performance_df(df_tran, df_pos)
-#     # pprint(df)
+if __name__ == "__main__":
+    notion = NotionAPI()
+    df_tran = notion.get_transactions_df()
+    df_pos = notion.get_his_positions_df(df_tran)
+    df_perf = notion.get_performance_df(df_tran, df_pos)
+    # pprint(df)

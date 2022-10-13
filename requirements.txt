@@ -4,6 +4,6 @@ pytest
 ipykernel
 yfinance
 pandas-datareader
+numpy-financial
+plotly
 # pandas
-# plotly
-# numpy-financial
